@@ -1,6 +1,6 @@
 {
   "name": "promise-processor",
-  "version": "1.0.1",
+  "version": "1.0.0",
   "description": "A utility for processing promises with concurrency, retries, timeouts, and error limits.",
   "main": "index.js",
   "keywords": [
