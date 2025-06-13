@@ -1,11 +1,14 @@
 class PromiseProcessor {
   constructor(promiseHandler, data, options = {}) {
+    if (!Array.isArray(data)) {
+      throw new Error("Data must be an array");
+    }
+
     this.promiseHandler = promiseHandler;
     this.originalData = data;
 
     this.delay = options.delay ?? 0;
     this.concurrency = options.concurrency ?? 1;
-
     this.timeout = options.timeout;
     this.retryDelay = options.retryDelay ?? 0;
     this.maxRetries = options.maxRetries ?? 0;
@@ -21,19 +24,15 @@ class PromiseProcessor {
       onTimeout: options.onTimeout,
     };
 
-    if (!Array.isArray(data)) {
-      throw new Error("Data must be an array");
-    }
-
     this.entries = data.map((item, index) => [index, item]);
-
     this.results = new Array(this.entries.length);
+
     this.currentIndex = 0;
     this.running = 0;
+    this.totalErrors = 0;
     this.stopped = false;
     this.immediateStop = false;
     this.resolved = false;
-    this.totalErrors = 0;
     this.waiters = [];
 
     this.result = new Promise((resolve, reject) => {
@@ -46,22 +45,31 @@ class PromiseProcessor {
     return new Promise((res) => setTimeout(res, ms));
   }
 
+  // ✅ FIXED: Không để timeout chạy tiếp sau khi task hoàn tất
   async _runWithTimeout(promise, key, item) {
     if (!this.timeout) return promise;
-    return Promise.race([
-      promise,
-      new Promise((_, reject) =>
-        setTimeout(() => {
-          const err = new Error(`Timeout at key ${key}`);
-          if (this.hooks.onTimeout) this.hooks.onTimeout(key, item, err);
-          reject(err);
-        }, this.timeout)
-      ),
-    ]);
+
+    let timeoutId;
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => {
+        const err = new Error(`Timeout at key ${key}`);
+        this.hooks.onTimeout?.(key, item, err);
+        reject(err);
+      }, this.timeout);
+    });
+
+    try {
+      const result = await Promise.race([promise, timeoutPromise]);
+      clearTimeout(timeoutId);
+      return result;
+    } catch (err) {
+      clearTimeout(timeoutId);
+      throw err;
+    }
   }
 
   _getMaxRetries(item, key) {
-    return typeof this.maxRetries === 'function'
+    return typeof this.maxRetries === "function"
       ? this.maxRetries(item, key)
       : this.maxRetries;
   }
@@ -79,17 +87,13 @@ class PromiseProcessor {
       } catch (err) {
         if (attempt === maxRetry) throw err;
         attempt++;
-        if (this.hooks.onRetry) {
-          this.hooks.onRetry(key, item, attempt, err);
-        }
+        this.hooks.onRetry?.(key, item, attempt, err);
       }
     }
   }
 
   async _worker() {
-    while (true) {
-      if (this.immediateStop || this.resolved) return;
-
+    while (!this.immediateStop && !this.resolved) {
       if (this.stopped) {
         await new Promise((resume) => this.waiters.push(resume));
         if (this.immediateStop || this.resolved) return;
@@ -101,16 +105,14 @@ class PromiseProcessor {
       this.running++;
 
       try {
-        if (this.hooks.onStart) this.hooks.onStart(key, item);
-
+        this.hooks.onStart?.(key, item);
         const result = await this._attemptRun(key, item);
         this.results[key] = result;
-
-        if (this.hooks.onFinish) this.hooks.onFinish(key, item, result);
+        this.hooks.onFinish?.(key, item, result);
       } catch (err) {
         this.totalErrors++;
         this.results[key] = { error: err };
-        if (this.hooks.onError) this.hooks.onError(key, item, err);
+        this.hooks.onError?.(key, item, err);
 
         if (this.totalErrors >= this.maxTotalErrors) {
           this.immediateStop = true;
@@ -148,14 +150,14 @@ class PromiseProcessor {
       this._rejectAll(new Error("Stopped immediately"));
     } else {
       this.stopped = true;
-      if (this.hooks.onPause) this.hooks.onPause(this.originalData);
+      this.hooks.onPause?.(this.originalData);
     }
   }
 
   resume() {
     if (!this.stopped || this.resolved || this.immediateStop) return;
     this.stopped = false;
-    if (this.hooks.onResume) this.hooks.onResume(this.originalData);
+    this.hooks.onResume?.(this.originalData);
     const waiters = [...this.waiters];
     this.waiters = [];
     waiters.forEach((resume) => resume());
