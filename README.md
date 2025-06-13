@@ -1,10 +1,4 @@
-README.md đã được cập nhật với phần mô tả và ví dụ sử dụng cho tính năng `maxTotalErrors`. Nếu bạn muốn mình tạo bản sao markdown đầy đủ hoặc xuất file, chỉ cần nói nhé bro!
 
-Dưới đây là nội dung `README.md` đầy đủ dành cho class `PromiseProcessor` bạn đã cung cấp:
-
----
-
-````markdown
 # PromiseProcessor
 
 A lightweight and extensible utility to manage asynchronous tasks with advanced control over concurrency, delays, timeouts, retries, and graceful shutdown.
