@@ -52,8 +52,7 @@ class PromiseProcessor {
     let timeoutId;
     const timeoutPromise = new Promise((_, reject) => {
       timeoutId = setTimeout(() => {
-        const err = new Error(`Timeout at key ${key}`);
-        this.hooks.onTimeout?.(key, item, err);
+        this.hooks.onTimeout?.(key, item);
         reject(err);
       }, this.timeout);
     });
