@@ -1,0 +1,13 @@
+{
+  "name": "promise-processor",
+  "version": "1.0.0",
+  "description": "A utility for processing promises with concurrency, retries, timeouts, and error limits.",
+  "main": "index.js",
+  "keywords": ["promise", "async", "retry", "concurrency", "timeout", "processor"],
+  "author": "Your Name",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/promise-processor"
+  }
+}
