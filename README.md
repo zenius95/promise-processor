@@ -1,126 +1,132 @@
+# promise-processor
 
-# PromiseProcessor
+**`promise-processor`** is a lightweight utility class for handling a batch of asynchronous tasks (Promises) with powerful features such as:
 
-A lightweight and extensible utility to manage asynchronous tasks with advanced control over concurrency, delays, timeouts, retries, and graceful shutdown.
+* 🔁 Concurrency control
+* ⏳ Delays between tasks
+* 🕐 Timeout per task
+* 🔁 Automatic retries
+* ⏸️ Pause / ▶️ Resume / 🛑 Stop support
+* 📡 Lifecycle hooks for monitoring task execution
 
-## Features
+---
 
-- Run asynchronous tasks with configurable concurrency
-- Delay between task starts
-- Retry failed tasks with delay
-- Timeout individual tasks
-- Stop immediately or after current tasks finish
-- Pause and resume processing
-- Limit maximum number of total errors
-- Event hooks for task lifecycle events
-
-## Installation
+## 📦 Installation
 
 ```bash
-npm install promise-processor
-````
+# Import it into your project
+npm i promise-processor
+```
 
-## Usage
+---
+
+## 🚀 Basic Usage
 
 ```js
-const PromiseProcessor = require('promise-processor');
-
-// Simulate async task
-const fakeApi = async (item) => {
-  await new Promise((res) => setTimeout(res, 500 + Math.random() * 1000));
-  if (Math.random() < 0.3) throw new Error("Random error");
-  return `Result for ${item}`;
+const mockApiCall = async (user) => {
+  // Simulate a slow API call
+  await new Promise(res => setTimeout(res, Math.random() * 1000));
+  if (Math.random() < 0.2) throw new Error("API error");
+  return `Welcome ${user.name}`;
 };
 
-const items = ["task1", "task2", "task3", "task4", "task5", "task6"];
+const users = [
+  { name: "Alice" },
+  { name: "Bob" },
+  { name: "Charlie" },
+  { name: "Diana" }
+];
 
-const processor = new PromiseProcessor(fakeApi, items, {
-  delay: 200,
-  concurrency: 2,
-  timeout: 1000,
-  maxRetries: 2,
-  retryDelay: 300,
-  maxTotalErrors: 3,
-  onStart: (key, item) => console.log(`Start: ${key}`, item),
-  onFinish: (key, item, result) => console.log(`Finish: ${key}`, result),
-  onError: (key, item, error) => console.error(`Error: ${key}`, error.message),
-  onRetry: (key, item, attempt, error) =>
-    console.log(`Retry: ${key} attempt ${attempt}`, error.message),
-  onTimeout: (key, item, error) => console.warn(`Timeout: ${key}`, error.message),
-  onPause: (data) => console.log("Paused"),
-  onResume: (data) => console.log("Resumed"),
-});
+const processor = new PromiseProcessor(
+  mockApiCall,
+  users,
+  {
+    concurrency: 2,
+    delay: 200,
+    timeout: 1500,
+    retryDelay: 500,
+    maxRetries: 1,
+    maxTotalErrors: 3,
 
-(async () => {
-  processor.start();
-
-  // Pause after 2s
-  setTimeout(() => processor.stop(), 2000);
-
-  // Resume after 4s
-  setTimeout(() => processor.resume(), 4000);
-
-  try {
-    const results = await processor.result;
-    console.log("All done:", results);
-  } catch (err) {
-    console.error("Processing stopped with error:", err.message);
+    // Hooks
+    onStart: (key, item) => console.log(`🔄 Starting [${key}] ${item.name}`),
+    onFinish: (key, item, result) => console.log(`✅ Done [${key}]: ${result}`),
+    onError: (key, item, err) => console.log(`❌ Failed [${key}]: ${err.message}`),
+    onRetry: (key, item, attempt, err) =>
+      console.log(`🔁 Retry [${key}] attempt ${attempt}: ${err.message}`),
+    onTimeout: (key, item, err) =>
+      console.log(`⏱️ Timeout [${key}]: ${item.name}`),
+    onPause: () => console.log("⏸️ Processing paused"),
+    onResume: () => console.log("▶️ Processing resumed"),
+    onDelay: (key, item, delay) =>
+      console.log(`⏳ Delaying ${delay}ms before [${key}]`)
   }
-})();
+);
+
+// Start processing
+processor.start()
+  .then(results => {
+    console.log("🎉 All tasks complete:", results);
+  })
+  .catch(err => {
+    console.error("🔥 Processor stopped:", err.message);
+  });
 ```
 
-## API
+---
 
-### Constructor
+## ⚙️ Options
+
+| Option           | Type                              | Default     | Description                                  |
+| ---------------- | --------------------------------- | ----------- | -------------------------------------------- |
+| `concurrency`    | `number`                          | `1`         | Maximum number of parallel tasks             |
+| `delay`          | `number` (ms)                     | `0`         | Delay between task executions                |
+| `timeout`        | `number` (ms)                     | `0`         | Max time allowed per task                    |
+| `retryDelay`     | `number` (ms)                     | `0`         | Delay between retry attempts                 |
+| `maxRetries`     | `number` or `function(item, key)` | `0`         | Max retry attempts per task                  |
+| `maxTotalErrors` | `number`                          | `Infinity`  | Max total failures before aborting all tasks |
+
+---
+
+## 🪝 Lifecycle Hooks
+
+| Hook                                 | Description                         |
+| ------------------------------------ | ----------------------------------- |
+| `onStart(key, item)`                 | Called before a task starts         |
+| `onFinish(key, item, result)`        | Called when a task succeeds         |
+| `onError(key, item, error)`          | Called when a task fails            |
+| `onRetry(key, item, attempt, error)` | Called before a retry               |
+| `onTimeout(key, item, error)`        | Called on task timeout              |
+| `onPause()`                          | Called when processing is paused    |
+| `onResume()`                         | Called when processing resumes      |
+| `onDelay(key, item, delay)`          | Called before a delay between tasks |
+
+---
+
+## 📘 API Methods
+
+### `start(): Promise<results[]>`
+
+Start processing all items. Resolves with an array of results (same order as input).
+
+### `stop(immediate = false)`
+
+* If `false`: pauses the processor, can be resumed later.
+* If `true`: immediately stops all tasks and rejects the main promise.
+
+### `resume()`
+
+Resumes processing if it was previously paused.
+
+---
+
+## 🧪 Output Example
 
 ```js
-new PromiseProcessor(promiseHandler, dataArray, options)
+[
+  "Welcome Alice",
+  { error: Error("API error") },
+  "Welcome Charlie",
+  "Welcome Diana"
+]
 ```
-
--   `promiseHandler`: an async function to handle each item
-
--   `dataArray`: array of data to process
-
--   `options`: configuration options (see below)
-
-
-### Options
-
-| Option | Type | Description |
-| --- | --- | --- |
-| `delay` | `number` | Delay (ms) between task starts |
-| `concurrency` | `number` | Max number of concurrent tasks |
-| `timeout` | `number` | Timeout (ms) for each task |
-| `maxRetries` | `number` |Max retry attempts per task|
-| `retryDelay` | `number` | Delay between retries |
-| `maxTotalErrors` | `number` | Abort all if total errors reach this number |
-| `onStart` | `(key, item) => void` | Called when a task starts |
-| `onFinish` | `(key, item, result) => void` | Called on successful completion |
-| `onError` | `(key, item, error) => void` | Called when a task fails after retries |
-| `onRetry` | `(key, item, attempt, error) => void` | Called on retry |
-| `onTimeout` | `(key, item, error) => void` | Called when a task times out |
-| `onPause` | `(dataArray) => void` | Called when paused |
-| `onResume` | `(dataArray) => void` | Called when resumed |
-
-### Methods
-
-#### `start()`
-
-Begin processing tasks. Returns immediately; the final result is exposed via the `result` promise.
-
-#### `stop(immediate = false)`
-
-Stop processing.
-
--   `immediate = true`: stops immediately, cancels further processing
-
--   `immediate = false`: lets current tasks finish, then halts
-
-
-#### `resume()`
-
-Resume after a `stop()` (graceful pause).
-
-#### `result`
-
-Promise that resolves with final results array or rejects on fatal error or immediate stop.

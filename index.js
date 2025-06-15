@@ -9,7 +9,7 @@ class PromiseProcessor {
 
     this.delay = options.delay ?? 0;
     this.concurrency = options.concurrency ?? 1;
-    this.timeout = options.timeout;
+    this.timeout = options.timeout ?? 0;
     this.retryDelay = options.retryDelay ?? 0;
     this.maxRetries = options.maxRetries ?? 0;
     this.maxTotalErrors = options.maxTotalErrors ?? Infinity;
@@ -22,6 +22,7 @@ class PromiseProcessor {
       onResume: options.onResume,
       onRetry: options.onRetry,
       onTimeout: options.onTimeout,
+      onDelay: options.onDelay,
     };
 
     this.entries = data.map((item, index) => [index, item]);
@@ -39,13 +40,15 @@ class PromiseProcessor {
       this._resolveAll = resolve;
       this._rejectAll = reject;
     });
+
+    this._lastStartTime = null; // ⏱️ thời điểm task trước bắt đầu
+    this._lock = Promise.resolve(); // 🔒 dùng để tuần tự hoá delay giữa các task
   }
 
   _wait(ms) {
     return new Promise((res) => setTimeout(res, ms));
   }
 
-  // ✅ FIXED: Không để timeout chạy tiếp sau khi task hoàn tất
   async _runWithTimeout(promise, key, item) {
     if (!this.timeout) return promise;
 
@@ -99,9 +102,27 @@ class PromiseProcessor {
         if (this.immediateStop || this.resolved) return;
       }
 
-      if (this.currentIndex >= this.entries.length) break;
+      let key, item;
 
-      const [key, item] = this.entries[this.currentIndex++];
+      // 🔒 Sử dụng lock để tuần tự hóa delay giữa các task
+      await (this._lock = this._lock.then(async () => {
+        if (this.currentIndex >= this.entries.length) return;
+
+        [key, item] = this.entries[this.currentIndex++];
+
+        // ⏱️ Delay giữa các task (chỉ delay nếu không phải task đầu tiên)
+        if (this._lastStartTime !== null && this.delay > 0) {
+          this.hooks.onDelay?.(key, item, this.delay);
+          await this._wait(this.delay);
+        }
+
+        // 🕒 Đánh dấu thời điểm task bắt đầu
+        this._lastStartTime = Date.now();
+      }));
+
+      // Nếu đã lấy hết task
+      if (key === undefined) break;
+
       this.running++;
 
       try {
@@ -132,8 +153,6 @@ class PromiseProcessor {
         this._resolveAll(this.results);
         return;
       }
-
-      await this._wait(this.delay);
     }
   }
 
