@@ -93,34 +93,34 @@ class PromiseProcessor {
     let attempt = 0;
 
     while (attempt <= maxRetry) {
-      if (this.immediateStop) {
-        this.hooks.onStopped?.("immediate", key, item);
-        return { stopped: true };
-      }
+      if (this.immediateStop) throw new Error("Stopped immediately");
+
+      const controller = new AbortController();
+      this._controllers.set(key, controller);
+
+      const abortPromise = new Promise((_, reject) => {
+        controller.signal.addEventListener("abort", () => {
+          reject(new Error("Aborted"));
+        });
+      });
 
       try {
         if (attempt > 0 && this.retryDelay) {
           await this._waitInterruptible(this.retryDelay);
         }
 
-        const controller = new AbortController();
-        this._controllers.set(key, controller);
-
         const task = this.promiseHandler(item, controller.signal);
-        const result = await this._runWithTimeout(task, key, item);
+        const result = await this._runWithTimeout(
+          Promise.race([task, abortPromise]),
+          key,
+          item
+        );
 
         this._controllers.delete(key);
         return result;
       } catch (err) {
         this._controllers.delete(key);
-
-        if (this.immediateStop) {
-          this.hooks.onStopped?.("immediate", key, item);
-          return { stopped: true };
-        }
-
-        if (attempt === maxRetry) throw err;
-
+        if (this.immediateStop || attempt === maxRetry) throw err;
         attempt++;
         this.hooks.onRetry?.(key, item, attempt, err);
       }
@@ -154,12 +154,6 @@ class PromiseProcessor {
       try {
         this.hooks.onStart?.(key, item);
         const result = await this._attemptRun(key, item);
-
-        if (result?.stopped) {
-          this.running--;
-          return;
-        }
-
         this.results[key] = result;
         this.hooks.onFinish?.(key, item, result);
       } catch (err) {
@@ -169,11 +163,13 @@ class PromiseProcessor {
 
         if (this.totalErrors >= this.maxTotalErrors) {
           this.immediateStop = true;
-          this.resolved = true;
-          this._controllers.forEach((c) => c.abort());
-          this._controllers.clear();
-          this.hooks.onStopped?.("immediate", key, item);
-          this._resolveAll(this.results);
+          this._rejectAll(new Error(`Exceeded maxTotalErrors (${this.maxTotalErrors})`));
+          this.hooks.onStopped?.("immediate");
+          return;
+        }
+
+        if (this.immediateStop) {
+          this.hooks.onStopped?.("immediate");
           return;
         }
       }
@@ -186,7 +182,6 @@ class PromiseProcessor {
         !this.resolved
       ) {
         this.resolved = true;
-        this.hooks.onStopped?.("normal", null, null);
         this._resolveAll(this.results);
         return;
       }
@@ -196,17 +191,24 @@ class PromiseProcessor {
   async start() {
     if (this.resolved || this.immediateStop) return;
     const workers = Array.from({ length: this.concurrency }, () => this._worker());
-    await Promise.all(workers);
+
+    try {
+      await Promise.all(workers);
+    } catch (err) {
+      // Đã xử lý reject ở _worker, không cần throw lại
+    }
   }
 
   stop(immediate = false) {
     if (immediate && !this.resolved) {
       this.immediateStop = true;
       this.resolved = true;
+
       this._controllers.forEach((controller) => controller.abort());
       this._controllers.clear();
-      this._resolveAll(this.results);
-      this.hooks.onStopped?.("immediate", null, null);
+
+      this._rejectAll(new Error("Stopped immediately"));
+      this.hooks.onStopped?.("immediate");
     } else {
       this.stopped = true;
       this.hooks.onPause?.(this.originalData);
