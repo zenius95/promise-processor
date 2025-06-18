@@ -178,9 +178,19 @@ class PromiseProcessor {
     }
   }
 
-  stop(immediate = false) {
+  async stop(immediate = false) {
     if (immediate && !this.resolved) {
       this.immediateStop = true;
+
+      // Gọi onStopped cho tất cả task còn lại
+      while (this.currentIndex < this.entries.length) {
+        const [key, item] = this.entries[this.currentIndex++];
+        this.hooks.onStopped?.(key, item);
+        this.results[key] = { stopped: true };
+      }
+
+      this.resolved = true;
+      this._resolveAll(this.results);
     } else {
       this.stopped = true;
       this.hooks.onPause?.(this.originalData);
