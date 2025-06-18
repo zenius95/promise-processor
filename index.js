@@ -23,6 +23,7 @@ class PromiseProcessor {
       onRetry: options.onRetry,
       onTimeout: options.onTimeout,
       onDelay: options.onDelay,
+      onStopped: options.onStopped, // ✅ NEW HOOK
     };
 
     this.entries = data.map((item, index) => [index, item]);
@@ -41,8 +42,8 @@ class PromiseProcessor {
       this._rejectAll = reject;
     });
 
-    this._lastStartTime = null; // ⏱️ thời điểm task trước bắt đầu
-    this._lock = Promise.resolve(); // 🔒 dùng để tuần tự hoá delay giữa các task
+    this._lastStartTime = null;
+    this._lock = Promise.resolve();
   }
 
   _wait(ms) {
@@ -104,24 +105,27 @@ class PromiseProcessor {
 
       let key, item;
 
-      // 🔒 Sử dụng lock để tuần tự hóa delay giữa các task
       await (this._lock = this._lock.then(async () => {
         if (this.currentIndex >= this.entries.length) return;
 
         [key, item] = this.entries[this.currentIndex++];
 
-        // ⏱️ Delay giữa các task (chỉ delay nếu không phải task đầu tiên)
         if (this._lastStartTime !== null && this.delay > 0) {
           this.hooks.onDelay?.(key, item, this.delay);
           await this._wait(this.delay);
         }
 
-        // 🕒 Đánh dấu thời điểm task bắt đầu
         this._lastStartTime = Date.now();
       }));
 
-      // Nếu đã lấy hết task
       if (key === undefined) break;
+
+      // Nếu stop ngay lập tức thì bỏ qua task này
+      if (this.immediateStop) {
+        this.hooks.onStopped?.(key, item);
+        this.results[key] = { stopped: true };
+        continue;
+      }
 
       this.running++;
 
@@ -137,7 +141,7 @@ class PromiseProcessor {
 
         if (this.totalErrors >= this.maxTotalErrors) {
           this.immediateStop = true;
-          this._rejectAll(new Error(`Exceeded maxTotalErrors (${this.maxTotalErrors})`));
+          this._resolveAll(this.results); // ❗ resolve thay vì reject
           return;
         }
       }
@@ -160,13 +164,24 @@ class PromiseProcessor {
     if (this.resolved || this.immediateStop) return;
     const workers = Array.from({ length: this.concurrency }, () => this._worker());
     await Promise.all(workers);
+
+    // ✅ Nếu bị dừng giữa chừng do `stop(true)` nhưng chưa resolve
+    if (this.immediateStop && !this.resolved) {
+      // Gọi onStopped cho các task còn lại
+      while (this.currentIndex < this.entries.length) {
+        const [key, item] = this.entries[this.currentIndex++];
+        this.hooks.onStopped?.(key, item);
+        this.results[key] = { stopped: true };
+      }
+      this.resolved = true;
+      this._resolveAll(this.results);
+    }
   }
 
   stop(immediate = false) {
     if (immediate && !this.resolved) {
       this.immediateStop = true;
-      this.resolved = true;
-      this._rejectAll(new Error("Stopped immediately"));
+      this.hooks.onPause?.(this.originalData);
     } else {
       this.stopped = true;
       this.hooks.onPause?.(this.originalData);
