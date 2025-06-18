@@ -181,7 +181,6 @@ class PromiseProcessor {
   stop(immediate = false) {
     if (immediate && !this.resolved) {
       this.immediateStop = true;
-      this.hooks.onPause?.(this.originalData);
     } else {
       this.stopped = true;
       this.hooks.onPause?.(this.originalData);
