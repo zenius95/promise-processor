@@ -1,8 +1,6 @@
 class PromiseProcessor {
   constructor(promiseHandler, data, options = {}) {
-    if (!Array.isArray(data)) {
-      throw new Error("Data must be an array");
-    }
+    if (!Array.isArray(data)) throw new Error("Data must be an array");
 
     this.promiseHandler = promiseHandler;
     this.originalData = data;
@@ -23,11 +21,11 @@ class PromiseProcessor {
       onRetry: options.onRetry,
       onTimeout: options.onTimeout,
       onDelay: options.onDelay,
-      onStopped: options.onStopped, // ✅ NEW HOOK
     };
 
     this.entries = data.map((item, index) => [index, item]);
     this.results = new Array(this.entries.length);
+    this._controllers = new Map();
 
     this.currentIndex = 0;
     this.running = 0;
@@ -48,6 +46,23 @@ class PromiseProcessor {
 
   _wait(ms) {
     return new Promise((res) => setTimeout(res, ms));
+  }
+
+  async _waitInterruptible(ms) {
+    const interval = 50;
+    let waited = 0;
+    while (waited < ms) {
+      if (this.immediateStop) break;
+      const next = Math.min(interval, ms - waited);
+      await this._wait(next);
+      waited += next;
+    }
+  }
+
+  _getMaxRetries(item, key) {
+    return typeof this.maxRetries === "function"
+      ? this.maxRetries(item, key)
+      : this.maxRetries;
   }
 
   async _runWithTimeout(promise, key, item) {
@@ -72,24 +87,28 @@ class PromiseProcessor {
     }
   }
 
-  _getMaxRetries(item, key) {
-    return typeof this.maxRetries === "function"
-      ? this.maxRetries(item, key)
-      : this.maxRetries;
-  }
-
   async _attemptRun(key, item) {
     const maxRetry = this._getMaxRetries(item, key);
     let attempt = 0;
 
     while (attempt <= maxRetry) {
+      if (this.immediateStop) throw new Error("Stopped immediately");
       try {
         if (attempt > 0 && this.retryDelay) {
-          await this._wait(this.retryDelay);
+          await this._waitInterruptible(this.retryDelay);
         }
-        return await this._runWithTimeout(this.promiseHandler(item), key, item);
+
+        const controller = new AbortController();
+        this._controllers.set(key, controller);
+
+        const task = this.promiseHandler(item, controller.signal);
+        const result = await this._runWithTimeout(task, key, item);
+
+        this._controllers.delete(key);
+        return result;
       } catch (err) {
-        if (attempt === maxRetry) throw err;
+        this._controllers.delete(key);
+        if (attempt === maxRetry || this.immediateStop) throw err;
         attempt++;
         this.hooks.onRetry?.(key, item, attempt, err);
       }
@@ -104,7 +123,6 @@ class PromiseProcessor {
       }
 
       let key, item;
-
       await (this._lock = this._lock.then(async () => {
         if (this.currentIndex >= this.entries.length) return;
 
@@ -112,23 +130,14 @@ class PromiseProcessor {
 
         if (this._lastStartTime !== null && this.delay > 0) {
           this.hooks.onDelay?.(key, item, this.delay);
-          await this._wait(this.delay);
+          await this._waitInterruptible(this.delay);
         }
-
         this._lastStartTime = Date.now();
       }));
 
-      if (key === undefined) break;
-
-      // Nếu stop ngay lập tức thì bỏ qua task này
-      if (this.immediateStop) {
-        this.hooks.onStopped?.(key, item);
-        this.results[key] = { stopped: true };
-        continue;
-      }
+      if (key === undefined || this.immediateStop) break;
 
       this.running++;
-
       try {
         this.hooks.onStart?.(key, item);
         const result = await this._attemptRun(key, item);
@@ -141,11 +150,10 @@ class PromiseProcessor {
 
         if (this.totalErrors >= this.maxTotalErrors) {
           this.immediateStop = true;
-          this._resolveAll(this.results); // ❗ resolve thay vì reject
+          this._rejectAll(new Error(`Exceeded maxTotalErrors (${this.maxTotalErrors})`));
           return;
         }
       }
-
       this.running--;
 
       if (
@@ -164,33 +172,15 @@ class PromiseProcessor {
     if (this.resolved || this.immediateStop) return;
     const workers = Array.from({ length: this.concurrency }, () => this._worker());
     await Promise.all(workers);
-
-    // ✅ Nếu bị dừng giữa chừng do `stop(true)` nhưng chưa resolve
-    if (this.immediateStop && !this.resolved) {
-      // Gọi onStopped cho các task còn lại
-      while (this.currentIndex < this.entries.length) {
-        const [key, item] = this.entries[this.currentIndex++];
-        this.hooks.onStopped?.(key, item);
-        this.results[key] = { stopped: true };
-      }
-      this.resolved = true;
-      this._resolveAll(this.results);
-    }
   }
 
-  async stop(immediate = false) {
+  stop(immediate = false) {
     if (immediate && !this.resolved) {
       this.immediateStop = true;
-
-      // Gọi onStopped cho tất cả task còn lại
-      while (this.currentIndex < this.entries.length) {
-        const [key, item] = this.entries[this.currentIndex++];
-        this.hooks.onStopped?.(key, item);
-        this.results[key] = { stopped: true };
-      }
-
       this.resolved = true;
-      this._resolveAll(this.results);
+      this._controllers.forEach((controller) => controller.abort());
+      this._controllers.clear();
+      this._rejectAll(new Error("Stopped immediately"));
     } else {
       this.stopped = true;
       this.hooks.onPause?.(this.originalData);
