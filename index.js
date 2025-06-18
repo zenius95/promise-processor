@@ -21,6 +21,7 @@ class PromiseProcessor {
       onRetry: options.onRetry,
       onTimeout: options.onTimeout,
       onDelay: options.onDelay,
+      onStopped: options.onStopped,
     };
 
     this.entries = data.map((item, index) => [index, item]);
@@ -92,7 +93,11 @@ class PromiseProcessor {
     let attempt = 0;
 
     while (attempt <= maxRetry) {
-      if (this.immediateStop) throw new Error("Stopped immediately");
+      if (this.immediateStop) {
+        this.hooks.onStopped?.("immediate", key, item);
+        return { stopped: true };
+      }
+
       try {
         if (attempt > 0 && this.retryDelay) {
           await this._waitInterruptible(this.retryDelay);
@@ -108,7 +113,14 @@ class PromiseProcessor {
         return result;
       } catch (err) {
         this._controllers.delete(key);
-        if (attempt === maxRetry || this.immediateStop) throw err;
+
+        if (this.immediateStop) {
+          this.hooks.onStopped?.("immediate", key, item);
+          return { stopped: true };
+        }
+
+        if (attempt === maxRetry) throw err;
+
         attempt++;
         this.hooks.onRetry?.(key, item, attempt, err);
       }
@@ -132,6 +144,7 @@ class PromiseProcessor {
           this.hooks.onDelay?.(key, item, this.delay);
           await this._waitInterruptible(this.delay);
         }
+
         this._lastStartTime = Date.now();
       }));
 
@@ -141,6 +154,12 @@ class PromiseProcessor {
       try {
         this.hooks.onStart?.(key, item);
         const result = await this._attemptRun(key, item);
+
+        if (result?.stopped) {
+          this.running--;
+          return;
+        }
+
         this.results[key] = result;
         this.hooks.onFinish?.(key, item, result);
       } catch (err) {
@@ -150,10 +169,15 @@ class PromiseProcessor {
 
         if (this.totalErrors >= this.maxTotalErrors) {
           this.immediateStop = true;
-          this._rejectAll(new Error(`Exceeded maxTotalErrors (${this.maxTotalErrors})`));
+          this.resolved = true;
+          this._controllers.forEach((c) => c.abort());
+          this._controllers.clear();
+          this.hooks.onStopped?.("immediate", key, item);
+          this._resolveAll(this.results);
           return;
         }
       }
+
       this.running--;
 
       if (
@@ -162,6 +186,7 @@ class PromiseProcessor {
         !this.resolved
       ) {
         this.resolved = true;
+        this.hooks.onStopped?.("normal", null, null);
         this._resolveAll(this.results);
         return;
       }
@@ -180,7 +205,8 @@ class PromiseProcessor {
       this.resolved = true;
       this._controllers.forEach((controller) => controller.abort());
       this._controllers.clear();
-      this._rejectAll(new Error("Stopped immediately"));
+      this._resolveAll(this.results);
+      this.hooks.onStopped?.("immediate", null, null);
     } else {
       this.stopped = true;
       this.hooks.onPause?.(this.originalData);
