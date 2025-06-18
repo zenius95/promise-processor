@@ -1,3 +1,4 @@
+
 class PromiseProcessor {
   constructor(promiseHandler, data, options = {}) {
     if (!Array.isArray(data)) throw new Error("Data must be an array");
@@ -72,7 +73,7 @@ class PromiseProcessor {
     let timeoutId;
     const timeoutPromise = new Promise((_, reject) => {
       timeoutId = setTimeout(() => {
-        const err = new Error(`Timeout`);
+        const err = new Error("Timeout");
         this.hooks.onTimeout?.(key, item, err);
         reject(err);
       }, this.timeout);
@@ -94,33 +95,22 @@ class PromiseProcessor {
 
     while (attempt <= maxRetry) {
       if (this.immediateStop) throw new Error("Stopped immediately");
-
-      const controller = new AbortController();
-      this._controllers.set(key, controller);
-
-      const abortPromise = new Promise((_, reject) => {
-        controller.signal.addEventListener("abort", () => {
-          reject(new Error("Aborted"));
-        });
-      });
-
       try {
         if (attempt > 0 && this.retryDelay) {
           await this._waitInterruptible(this.retryDelay);
         }
 
+        const controller = new AbortController();
+        this._controllers.set(key, controller);
+
         const task = this.promiseHandler(item, controller.signal);
-        const result = await this._runWithTimeout(
-          Promise.race([task, abortPromise]),
-          key,
-          item
-        );
+        const result = await this._runWithTimeout(task, key, item);
 
         this._controllers.delete(key);
         return result;
       } catch (err) {
         this._controllers.delete(key);
-        if (this.immediateStop || attempt === maxRetry) throw err;
+        if (attempt === maxRetry || this.immediateStop) throw err;
         attempt++;
         this.hooks.onRetry?.(key, item, attempt, err);
       }
@@ -137,7 +127,6 @@ class PromiseProcessor {
       let key, item;
       await (this._lock = this._lock.then(async () => {
         if (this.currentIndex >= this.entries.length) return;
-
         [key, item] = this.entries[this.currentIndex++];
 
         if (this._lastStartTime !== null && this.delay > 0) {
@@ -161,14 +150,14 @@ class PromiseProcessor {
         this.results[key] = { error: err };
         this.hooks.onError?.(key, item, err);
 
-        if (this.totalErrors >= this.maxTotalErrors) {
-          this.immediateStop = true;
-          this._rejectAll(new Error(`Exceeded maxTotalErrors (${this.maxTotalErrors})`));
+        if (this.immediateStop && err.message === "Stopped immediately") {
           this.hooks.onStopped?.("immediate");
           return;
         }
 
-        if (this.immediateStop) {
+        if (this.totalErrors >= this.maxTotalErrors) {
+          this.immediateStop = true;
+          this._rejectAll(new Error(`Exceeded maxTotalErrors (${this.maxTotalErrors})`));
           this.hooks.onStopped?.("immediate");
           return;
         }
@@ -195,7 +184,9 @@ class PromiseProcessor {
     try {
       await Promise.all(workers);
     } catch (err) {
-      // Đã xử lý reject ở _worker, không cần throw lại
+      if (err.message !== "Stopped immediately" && !this.immediateStop) {
+        throw err;
+      }
     }
   }
 
@@ -203,10 +194,8 @@ class PromiseProcessor {
     if (immediate && !this.resolved) {
       this.immediateStop = true;
       this.resolved = true;
-
       this._controllers.forEach((controller) => controller.abort());
       this._controllers.clear();
-
       this._rejectAll(new Error("Stopped immediately"));
       this.hooks.onStopped?.("immediate");
     } else {
